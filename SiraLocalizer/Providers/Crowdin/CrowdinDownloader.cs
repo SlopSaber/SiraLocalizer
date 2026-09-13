@@ -59,7 +59,7 @@ namespace SiraLocalizer.Providers.Crowdin
 
                 if (!LocalizationDefinition.IsDefinitionLoaded(parsed.id))
                 {
-                    _logger.Warn($"No localized plugin registered for '{parsed.id}'; ignored");
+                    _logger.Debug($"No localized plugin registered for '{parsed.id}'; ignored");
                     continue;
                 }
 

@@ -104,7 +104,7 @@ namespace SiraLocalizer.Providers.CrowdinApi
 
                 if (!LocalizationDefinition.IsDefinitionLoaded(id))
                 {
-                    _logger.Warn($"No localized plugin registered for '{id}'; ignored");
+                    _logger.Debug($"No localized plugin registered for '{id}'; ignored");
                     continue;
                 }
 
