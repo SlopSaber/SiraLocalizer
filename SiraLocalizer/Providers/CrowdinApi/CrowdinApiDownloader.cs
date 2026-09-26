@@ -84,7 +84,7 @@ namespace SiraLocalizer.Providers.CrowdinApi
 
             DownloadLinkResponse resp = await WaitForBuildToFinishAsync(buildResponse.id);
 
-            await DownloadAndExtractBuild(resp.url);
+            await DownloadAndExtractBuild(resp.url, cancellationToken);
 
             File.WriteAllText(kBuildIdPath, buildResponse.id.ToString());
         }
@@ -206,22 +206,24 @@ namespace SiraLocalizer.Providers.CrowdinApi
             }
         }
 
-        private async Task DownloadAndExtractBuild(string url)
+        private async Task DownloadAndExtractBuild(string url, CancellationToken cancellationToken)
         {
-            if (Directory.Exists(kDownloadedFolder))
-            {
-                Directory.Delete(kDownloadedFolder, true);
-            }
-
-            Directory.CreateDirectory(kDownloadedFolder);
-
             using var webRequest = UnityWebRequest.Get(url);
             await _webRequestHelper.SendRequest(webRequest);
 
-            using var memoryStream = new MemoryStream(webRequest.downloadHandler.data);
-            using var archive = new ZipArchive(memoryStream);
+            byte[] data = webRequest.downloadHandler.data;
+            await Task.Run(() =>
+            {
+                if (Directory.Exists(kDownloadedFolder))
+                {
+                    Directory.Delete(kDownloadedFolder, true);
+                }
 
-            archive.ExtractToDirectory(kDownloadedFolder);
+                Directory.CreateDirectory(kDownloadedFolder);
+                using var memoryStream = new MemoryStream(data);
+                using var archive = new ZipArchive(memoryStream);
+                archive.ExtractToDirectory(kDownloadedFolder);
+            }, cancellationToken);
         }
 
         private UnityWebRequest CreateApiRequest(string path, string method = "GET", object body = null, Dictionary<string, string> queryParameters = null)

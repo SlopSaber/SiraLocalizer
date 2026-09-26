@@ -33,7 +33,7 @@ namespace SiraLocalizer.UI
 
         private readonly List<TMP_FontAsset> _fallbackFontAssets = [];
         private readonly List<TMP_FontAsset> _createdFontAssets = [];
-        private readonly List<TMP_FontAsset> _processedFontAssets = [];
+        private readonly HashSet<TMP_FontAsset> _processedFontAssets = [];
 
         internal TMP_FontAsset tekoBoldFontAsset { get; private set; }
 
@@ -62,6 +62,7 @@ namespace SiraLocalizer.UI
 
             foreach (TMP_FontAsset fontAsset in _processedFontAssets)
             {
+                if (fontAsset == null) continue;
                 fontAsset.fallbackFontAssetTable.RemoveAll(f => _createdFontAssets.Contains(f) || _fallbackFontAssets.Contains(f));
             }
 
@@ -142,7 +143,9 @@ namespace SiraLocalizer.UI
         {
             if (!_fallbackFontAssets.Any()) return;
 
+            _processedFontAssets.RemoveWhere(fontAsset => fontAsset == null);
             TMP_FontAsset[] fontAssets = Resources.FindObjectsOfTypeAll<TMP_FontAsset>();
+            bool changed = false;
 
             foreach (FontReplacementStrategy strategy in kFontReplacementStrategies)
             {
@@ -151,10 +154,13 @@ namespace SiraLocalizer.UI
                 foreach (TMP_FontAsset fontAsset in originalFontAssets)
                 {
                     AddFallbacksToFont(fontAsset, strategy.fontNamesToAdd.Select(n => _fallbackFontAssets.Find(f => f.name == n)).Where(f => f != null));
+                    changed = true;
                 }
             }
 
-            // force update any text that has already rendered
+            if (!changed) return;
+
+            // Existing text needs rebuilding only when a font's fallbacks changed.
             foreach (TMP_Text text in Object.FindObjectsByType<TMP_Text>(FindObjectsSortMode.None))
             {
                 text.SetAllDirty();

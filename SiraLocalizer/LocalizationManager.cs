@@ -160,13 +160,11 @@ namespace SiraLocalizer
 
                 foreach (string key in def.keys)
                 {
-                    if (!languageStrings.ContainsKey(key))
+                    if (!languageStrings.TryGetValue(key, out List<string> strings))
                     {
                         _logger.Warn($"Key '{key}' does not exist");
                         continue;
                     }
-
-                    List<string> strings = languageStrings[key];
 
                     if (strings.Count == 0)
                     {
@@ -180,7 +178,7 @@ namespace SiraLocalizer
                         continue;
                     }
 
-                    int words = english.Split(kWhiteSpaceCharacters, StringSplitOptions.RemoveEmptyEntries).Length;
+                    int words = CountWords(english);
                     total += words;
 
                     if (!string.IsNullOrWhiteSpace(strings.ElementAtOrDefault((int)language)))
@@ -193,6 +191,25 @@ namespace SiraLocalizer
             }
 
             return statuses;
+        }
+
+        private static int CountWords(string text)
+        {
+            int words = 0;
+            bool inWord = false;
+            foreach (char character in text)
+            {
+                if (Array.IndexOf(kWhiteSpaceCharacters, character) >= 0)
+                {
+                    inWord = false;
+                }
+                else if (!inWord)
+                {
+                    words++;
+                    inWord = true;
+                }
+            }
+            return words;
         }
 
         [AffinityPatch(typeof(LocalizationImporter), nameof(LocalizationImporter.ImportFromFiles))]
