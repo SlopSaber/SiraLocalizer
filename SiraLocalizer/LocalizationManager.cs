@@ -259,10 +259,10 @@ namespace SiraLocalizer
         private void ImportPreparedFile(LocalizationPreparation.Result prepared)
         {
             var languageStrings = Localization.Instance._languageStrings;
-            foreach (LocalizationPreparation.PreparedRow preparedRow in prepared.Rows)
+            foreach (LocalizationPreparation.PreparedRow preparedRow in prepared.rows)
             {
-                string key = preparedRow.Key;
-                List<string> row = new(preparedRow.Values);
+                string key = preparedRow.key;
+                List<string> row = new(preparedRow.values);
 
                 if (languageStrings.TryGetValue(key, out List<string> existingValues))
                 {

@@ -21,7 +21,7 @@ namespace SiraLocalizer.Providers
                 var file = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadResource, resourceName);
                 cancellationToken.ThrowIfCancellationRequested();
                 file.ThrowIfFailed();
-                yield return new LocalizationFile(file.Text, 0);
+                yield return new LocalizationFile(file.text, 0);
             }
         }
     }

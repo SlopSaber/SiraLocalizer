@@ -15,13 +15,13 @@ namespace SiraLocalizer.Providers
             string folder = Path.GetFullPath(Path.Combine(UnityGame.UserDataPath, "SiraLocalizer", "Localizations", "User"));
 
             var catalog = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadUserCatalog, folder);
-            foreach (string filePath in catalog.Paths)
+            foreach (string filePath in catalog.paths)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var file = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadFile, filePath);
                 cancellationToken.ThrowIfCancellationRequested();
                 file.ThrowIfFailed();
-                yield return new LocalizationFile(file.Text, 2000);
+                yield return new LocalizationFile(file.text, 2000);
             }
             catalog.ThrowIfFailed();
         }

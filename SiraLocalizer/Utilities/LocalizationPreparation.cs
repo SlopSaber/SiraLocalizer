@@ -22,58 +22,58 @@ namespace SiraLocalizer.Utilities
 
         internal sealed class PreparedRow
         {
-            internal readonly string Key;
-            internal readonly string[] Values;
+            internal readonly string key;
+            internal readonly string[] values;
 
             internal PreparedRow(string key, string[] values)
             {
-                Key = key;
-                Values = values;
+                this.key = key;
+                this.values = values;
             }
         }
 
         internal sealed class Result
         {
-            internal string Text;
-            internal string[] Paths = Array.Empty<string>();
-            internal PreparedRow[] Rows = Array.Empty<PreparedRow>();
-            internal Exception Error;
+            internal string text;
+            internal string[] paths = Array.Empty<string>();
+            internal PreparedRow[] rows = Array.Empty<PreparedRow>();
+            internal Exception error;
 
             internal void ThrowIfFailed()
             {
-                if (Error != null)
-                    ExceptionDispatchInfo.Capture(Error).Throw();
+                if (error != null)
+                    ExceptionDispatchInfo.Capture(error).Throw();
             }
         }
 
         private sealed class Request
         {
-            internal readonly Operation Operation;
-            internal readonly string Value;
-            internal readonly TaskCompletionSource<Result> Completion;
+            internal readonly Operation operation;
+            internal readonly string value;
+            internal readonly TaskCompletionSource<Result> completion;
 
             internal Request(Operation operation, string value)
             {
-                Operation = operation;
-                Value = value;
-                Completion = new TaskCompletionSource<Result>(TaskCreationOptions.RunContinuationsAsynchronously);
+                this.operation = operation;
+                this.value = value;
+                completion = new TaskCompletionSource<Result>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
 
-        private static readonly object Gate = new();
-        private static readonly Queue<Request> Requests = new();
+        private static readonly object kGate = new();
+        private static readonly Queue<Request> kRequests = new();
         private static Task _worker;
 
         internal static Task<Result> Prepare(Operation operation, string value)
         {
             var request = new Request(operation, value);
-            lock (Gate)
+            lock (kGate)
             {
-                Requests.Enqueue(request);
+                kRequests.Enqueue(request);
                 if (_worker == null)
                     StartWorker();
             }
-            return request.Completion.Task;
+            return request.completion.Task;
         }
 
         private static void StartWorker()
@@ -87,25 +87,25 @@ namespace SiraLocalizer.Utilities
             while (true)
             {
                 Request request;
-                lock (Gate)
+                lock (kGate)
                 {
-                    if (Requests.Count == 0)
+                    if (kRequests.Count == 0)
                         return;
-                    request = Requests.Dequeue();
+                    request = kRequests.Dequeue();
                 }
-                request.Completion.SetResult(Execute(request.Operation, request.Value));
+                request.completion.SetResult(Execute(request.operation, request.value));
             }
         }
 
         private static void Completed(Task completed)
         {
-            lock (Gate)
+            lock (kGate)
             {
                 if (!ReferenceEquals(_worker, completed))
                     return;
                 // The retained task is released only after its physical worker has finished.
                 _worker = null;
-                if (Requests.Count > 0)
+                if (kRequests.Count > 0)
                     StartWorker();
             }
         }
@@ -122,12 +122,12 @@ namespace SiraLocalizer.Utilities
                         break;
                     case Operation.ReadFile:
                         using (var reader = new StreamReader(value))
-                            result.Text = reader.ReadToEnd();
+                            result.text = reader.ReadToEnd();
                         break;
                     case Operation.ReadResource:
                         using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(value))
                         using (var reader = new StreamReader(stream))
-                            result.Text = reader.ReadToEnd();
+                            result.text = reader.ReadToEnd();
                         break;
                     case Operation.PrepareCsv:
                         PrepareCsv(result, value);
@@ -138,7 +138,7 @@ namespace SiraLocalizer.Utilities
             }
             catch (Exception error)
             {
-                result.Error = error;
+                result.error = error;
             }
             return result;
         }
@@ -155,7 +155,7 @@ namespace SiraLocalizer.Utilities
             }
             finally
             {
-                result.Paths = paths.ToArray();
+                result.paths = paths.ToArray();
             }
         }
 
@@ -192,7 +192,7 @@ namespace SiraLocalizer.Utilities
             finally
             {
                 // A malformed later row must not discard the successfully prepared prefix.
-                result.Rows = preparedRows.ToArray();
+                result.rows = preparedRows.ToArray();
             }
         }
     }
