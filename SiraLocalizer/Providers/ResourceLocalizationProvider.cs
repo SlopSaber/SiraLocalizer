@@ -1,9 +1,8 @@
 using System.Collections.Generic;
-using System.IO;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using SiraLocalizer.Records;
+using SiraLocalizer.Utilities;
 
 namespace SiraLocalizer.Providers
 {
@@ -18,12 +17,11 @@ namespace SiraLocalizer.Providers
         {
             foreach (string resourceName in kResourcesToLoad)
             {
-                using Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resourceName);
-                using StreamReader reader = new(stream);
-
-                string content = await reader.ReadToEndAsync();
-
-                yield return new LocalizationFile(content, 0);
+                cancellationToken.ThrowIfCancellationRequested();
+                var file = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadResource, resourceName);
+                cancellationToken.ThrowIfCancellationRequested();
+                file.ThrowIfFailed();
+                yield return new LocalizationFile(file.Text, 0);
             }
         }
     }

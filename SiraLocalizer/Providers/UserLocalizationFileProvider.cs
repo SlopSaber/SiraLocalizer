@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using IPA.Utilities;
 using SiraLocalizer.Records;
+using SiraLocalizer.Utilities;
 
 namespace SiraLocalizer.Providers
 {
@@ -13,15 +14,16 @@ namespace SiraLocalizer.Providers
         {
             string folder = Path.GetFullPath(Path.Combine(UnityGame.UserDataPath, "SiraLocalizer", "Localizations", "User"));
 
-            if (!Directory.Exists(folder))
-                Directory.CreateDirectory(folder);
-
-            foreach (string filePath in Directory.EnumerateFiles(folder, "*.csv"))
+            var catalog = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadUserCatalog, folder);
+            foreach (string filePath in catalog.Paths)
             {
-                using StreamReader reader = new(filePath);
-                string fileText = await reader.ReadToEndAsync();
-                yield return new LocalizationFile(fileText, 2000);
+                cancellationToken.ThrowIfCancellationRequested();
+                var file = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadFile, filePath);
+                cancellationToken.ThrowIfCancellationRequested();
+                file.ThrowIfFailed();
+                yield return new LocalizationFile(file.Text, 2000);
             }
+            catalog.ThrowIfFailed();
         }
     }
 }

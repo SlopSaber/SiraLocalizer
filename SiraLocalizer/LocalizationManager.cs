@@ -7,6 +7,7 @@ using BGLib.Polyglot;
 using JetBrains.Annotations;
 using SiraLocalizer.Providers;
 using SiraLocalizer.Records;
+using SiraLocalizer.Utilities;
 using SiraUtil.Affinity;
 using SiraUtil.Logging;
 using Zenject;
@@ -27,6 +28,8 @@ namespace SiraLocalizer
         private readonly SettingsManager _settingsManager;
 
         private readonly List<LocalizationFile> _localizationFiles = new();
+        private int _registrationRevision;
+        private bool _disposed;
 
         public LocalizationManager(SiraLog logger, Settings config, List<ILocalizationProvider> localizationProviders, List<ILocalizationDownloader> localizationDownloaders, SettingsManager settingsManager)
         {
@@ -39,6 +42,7 @@ namespace SiraLocalizer
 
         public async void Initialize()
         {
+            int revision = _registrationRevision;
             try
             {
                 if (_config.automaticallyDownloadLocalizations)
@@ -46,6 +50,7 @@ namespace SiraLocalizer
                     await CheckForUpdatesAndDownloadIfAvailable(CancellationToken.None);
                 }
 
+                if (_disposed || revision != _registrationRevision) return;
                 await RegisterLocalizationsAsync(CancellationToken.None);
             }
             catch (Exception ex)
@@ -56,6 +61,7 @@ namespace SiraLocalizer
 
         public void Dispose()
         {
+            _disposed = true;
             DeregisterLocalizations();
         }
 
@@ -123,14 +129,21 @@ namespace SiraLocalizer
 
         private async Task RegisterLocalizationsAsync(CancellationToken cancellationToken)
         {
+            int revision = ++_registrationRevision;
             foreach (ILocalizationProvider localizationProvider in _localizationProviders)
             {
+                if (_disposed || revision != _registrationRevision) return;
                 cancellationToken.ThrowIfCancellationRequested();
 
                 try
                 {
                     await foreach (LocalizationFile file in localizationProvider.GetLocalizationAssetsAsync(cancellationToken))
                     {
+                        if (_disposed || revision != _registrationRevision) return;
+                        cancellationToken.ThrowIfCancellationRequested();
+                        file.prepared = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.PrepareCsv, file.content);
+                        if (_disposed || revision != _registrationRevision) return;
+                        cancellationToken.ThrowIfCancellationRequested();
                         _localizationFiles.Add(file);
                     }
                 }
@@ -140,11 +153,14 @@ namespace SiraLocalizer
                 }
             }
 
+            if (_disposed || revision != _registrationRevision) return;
+            cancellationToken.ThrowIfCancellationRequested();
             LocalizationImporter.ImportFromFiles(Localization.Instance.inputFiles);
         }
 
         private void DeregisterLocalizations()
         {
+            _registrationRevision++;
             _localizationFiles.Clear();
         }
 
@@ -233,50 +249,20 @@ namespace SiraLocalizer
         {
             foreach (LocalizationFile localizationFile in _localizationFiles.OrderBy(l => l.priority))
             {
-                ImportTextFile(localizationFile.content);
+                ImportPreparedFile(localizationFile.prepared);
             }
         }
 
         /// <summary>
-        /// Similar to <see cref="LocalizationImporter.ImportTextFile"/> but doesn't touch English strings if they already exist.
+        /// Applies prepared CSV rows without replacing existing English strings.
         /// </summary>
-        /// <param name="text">The localization file in CSV format.</param>
-        private void ImportTextFile(string text)
+        private void ImportPreparedFile(LocalizationPreparation.Result prepared)
         {
-            text = text.Replace("\r\n", "\n");
-            List<List<string>> list = CsvReader.Parse(text);
             var languageStrings = Localization.Instance._languageStrings;
-
-            foreach (List<string> row in list.SkipWhile(r => r[0] != "Polyglot").Skip(1))
+            foreach (LocalizationPreparation.PreparedRow preparedRow in prepared.Rows)
             {
-                string key = row[0];
-
-                if (string.IsNullOrEmpty(key) || LocalizationImporter.IsLineBreak(key) || row.Count <= 1)
-                {
-                    continue;
-                }
-
-                string longestString = string.Empty;
-
-                foreach (string str in row.Skip(2))
-                {
-                    if (longestString.Length < str.Length)
-                    {
-                        longestString = str;
-                    }
-                }
-
-                char[] chars = row[2].ToCharArray();
-                Array.Reverse(chars);
-                string reversed = new(chars);
-
-                row.Add(row[0]);
-                row.Add(reversed);
-                row.Add(longestString);
-
-                // remove key and context
-                row.RemoveAt(0);
-                row.RemoveAt(0);
+                string key = preparedRow.Key;
+                List<string> row = new(preparedRow.Values);
 
                 if (languageStrings.TryGetValue(key, out List<string> existingValues))
                 {
@@ -286,6 +272,7 @@ namespace SiraLocalizer
 
                 languageStrings[key] = row;
             }
+            prepared.ThrowIfFailed();
         }
 
         private void UpdateSupportedLanguages()

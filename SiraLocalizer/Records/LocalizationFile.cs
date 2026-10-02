@@ -1,3 +1,5 @@
+using SiraLocalizer.Utilities;
+
 namespace SiraLocalizer.Records
 {
     internal record LocalizationFile
@@ -5,6 +7,8 @@ namespace SiraLocalizer.Records
         internal string content { get; }
 
         internal int priority { get; }
+
+        internal LocalizationPreparation.Result prepared { get; set; }
 
         internal LocalizationFile(string content, int priority)
         {
