@@ -278,10 +278,7 @@ namespace SiraLocalizer.Utilities
         {
             if (!task.IsCompleted)
             {
-                using var completed = new ManualResetEventSlim();
-                task.ContinueWith(static (_, state) => ((ManualResetEventSlim)state).Set(), completed,
-                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-                completed.Wait();
+                ((IAsyncResult)task).AsyncWaitHandle.WaitOne();
             }
             return task.GetAwaiter().GetResult();
         }
