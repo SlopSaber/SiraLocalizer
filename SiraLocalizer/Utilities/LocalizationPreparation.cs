@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using BGLib.Polyglot;
+using Newtonsoft.Json;
+using SiraLocalizer.Providers.Crowdin;
 
 namespace SiraLocalizer.Utilities
 {
@@ -18,6 +22,28 @@ namespace SiraLocalizer.Utilities
             ReadFile,
             ReadResource,
             PrepareCsv,
+            CheckCrowdinCache,
+            CheckFile,
+            ParseCrowdinPath,
+            ParseCrowdinManifest,
+            ResetDirectory,
+            CreateFileDirectory,
+            WriteCrowdinFile,
+            WriteText,
+        }
+
+        internal readonly struct CrowdinPath
+        {
+            internal readonly string id;
+            internal readonly string pathOnDisk;
+            internal readonly string relativePath;
+
+            internal CrowdinPath(string id, string pathOnDisk, string relativePath)
+            {
+                this.id = id;
+                this.pathOnDisk = pathOnDisk;
+                this.relativePath = relativePath;
+            }
         }
 
         internal sealed class PreparedRow
@@ -38,6 +64,9 @@ namespace SiraLocalizer.Utilities
             internal string[] paths = Array.Empty<string>();
             internal PreparedRow[] rows = Array.Empty<PreparedRow>();
             internal Exception error;
+            internal bool exists;
+            internal CrowdinPath crowdinPath;
+            internal CrowdinDistributionManifest manifest;
 
             internal void ThrowIfFailed()
             {
@@ -50,23 +79,28 @@ namespace SiraLocalizer.Utilities
         {
             internal readonly Operation operation;
             internal readonly string value;
+            internal readonly string secondaryValue;
+            internal readonly byte[] bytes;
             internal readonly TaskCompletionSource<Result> completion;
 
-            internal Request(Operation operation, string value)
+            internal Request(Operation operation, string value, string secondaryValue, byte[] bytes)
             {
                 this.operation = operation;
                 this.value = value;
+                this.secondaryValue = secondaryValue;
+                this.bytes = bytes;
                 completion = new TaskCompletionSource<Result>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
 
         private static readonly object kGate = new();
         private static readonly Queue<Request> kRequests = new();
+        private static readonly Regex kCrowdinPathRegex = new(@"^\/[A-Za-z\-_]+(?:\/[A-Za-z\-_]+)*\.csv$");
         private static Task _worker;
 
-        internal static Task<Result> Prepare(Operation operation, string value)
+        internal static Task<Result> Prepare(Operation operation, string value, string secondaryValue = null, byte[] bytes = null)
         {
-            var request = new Request(operation, value);
+            var request = new Request(operation, value, secondaryValue, bytes);
             lock (kGate)
             {
                 kRequests.Enqueue(request);
@@ -93,7 +127,7 @@ namespace SiraLocalizer.Utilities
                         return;
                     request = kRequests.Dequeue();
                 }
-                request.completion.SetResult(Execute(request.operation, request.value));
+                request.completion.SetResult(Execute(request));
             }
         }
 
@@ -110,12 +144,13 @@ namespace SiraLocalizer.Utilities
             }
         }
 
-        private static Result Execute(Operation operation, string value)
+        private static Result Execute(Request request)
         {
             var result = new Result();
+            string value = request.value;
             try
             {
-                switch (operation)
+                switch (request.operation)
                 {
                     case Operation.ReadUserCatalog:
                         ReadUserCatalog(result, value);
@@ -132,8 +167,40 @@ namespace SiraLocalizer.Utilities
                     case Operation.PrepareCsv:
                         PrepareCsv(result, value);
                         break;
+                    case Operation.CheckCrowdinCache:
+                        result.exists = File.Exists(value) && Directory.Exists(request.secondaryValue);
+                        break;
+                    case Operation.CheckFile:
+                        result.exists = File.Exists(value);
+                        break;
+                    case Operation.ParseCrowdinPath:
+                        result.crowdinPath = ParseCrowdinPath(value, request.secondaryValue);
+                        break;
+                    case Operation.ParseCrowdinManifest:
+                        using (var reader = new JsonTextReader(new StringReader(value)))
+                        {
+                            // Bypass global factory callbacks; custom settings stay on the caller.
+                            JsonSerializer serializer = JsonSerializer.Create();
+                            serializer.CheckAdditionalContent = true;
+                            result.manifest = serializer.Deserialize<CrowdinDistributionManifest>(reader);
+                        }
+                        break;
+                    case Operation.ResetDirectory:
+                        if (Directory.Exists(value)) Directory.Delete(value, true);
+                        Directory.CreateDirectory(value);
+                        break;
+                    case Operation.CreateFileDirectory:
+                        Directory.CreateDirectory(Path.GetDirectoryName(value));
+                        break;
+                    case Operation.WriteCrowdinFile:
+                        WriteCrowdinFile(value, request.bytes);
+                        break;
+                    case Operation.WriteText:
+                        using (var writer = new StreamWriter(value))
+                            writer.Write(request.secondaryValue);
+                        break;
                     default:
-                        throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
+                        throw new ArgumentOutOfRangeException(nameof(request.operation), request.operation, null);
                 }
             }
             catch (Exception error)
@@ -141,6 +208,31 @@ namespace SiraLocalizer.Utilities
                 result.error = error;
             }
             return result;
+        }
+
+        private static CrowdinPath ParseCrowdinPath(string filePath, string directory)
+        {
+            if (!kCrowdinPathRegex.IsMatch(filePath))
+                throw new ArgumentException($"Path '{filePath}' is invalid", nameof(filePath));
+            string relativePath = filePath.Substring(1);
+            return new CrowdinPath(Path.ChangeExtension(relativePath, null), Path.Combine(directory, relativePath), relativePath);
+        }
+
+        private static void WriteCrowdinFile(string path, byte[] data)
+        {
+            // The caller transfers the fresh download byte array exclusively to this request.
+            if (data[0] == 0x1f && data[1] == 0x8b)
+            {
+                using var memoryStream = new MemoryStream(data);
+                using var gzipStream = new GZipStream(memoryStream, CompressionMode.Decompress);
+                using var fileStream = new FileStream(path, FileMode.Create);
+                gzipStream.CopyTo(fileStream);
+            }
+            else
+            {
+                using var fileStream = new FileStream(path, FileMode.Create);
+                fileStream.Write(data, 0, data.Length);
+            }
         }
 
         private static void ReadUserCatalog(Result result, string path)

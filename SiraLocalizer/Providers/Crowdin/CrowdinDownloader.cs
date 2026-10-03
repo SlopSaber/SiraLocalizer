@@ -1,9 +1,6 @@
-using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
 using System.Runtime.CompilerServices;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using IPA.Utilities;
@@ -26,8 +23,6 @@ namespace SiraLocalizer.Providers.Crowdin
         private static readonly string kDownloadedFolder = Path.Combine(kLocalizationsFolder, "Content");
         private static readonly string kManifestFilePath = Path.Combine(kLocalizationsFolder, "manifest.json");
 
-        private static readonly Regex kValidPathRegex = new(@"^\/[A-Za-z\-_]+(?:\/[A-Za-z\-_]+)*\.csv$");
-
         private readonly SiraLog _logger;
 
         internal CrowdinDownloader(SiraLog logger)
@@ -39,7 +34,7 @@ namespace SiraLocalizer.Providers.Crowdin
 
         public async IAsyncEnumerable<LocalizationFile> GetLocalizationAssetsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            if (!File.Exists(kManifestFilePath) || !Directory.Exists(kDownloadedFolder))
+            if (!await HasLocalCacheAsync())
             {
                 yield break;
             }
@@ -55,7 +50,7 @@ namespace SiraLocalizer.Providers.Crowdin
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                ParsedPathData parsed = ParsePath(filePath);
+                LocalizationPreparation.CrowdinPath parsed = await ParsePathAsync(filePath);
 
                 if (!LocalizationDefinition.IsDefinitionLoaded(parsed.id))
                 {
@@ -63,7 +58,7 @@ namespace SiraLocalizer.Providers.Crowdin
                     continue;
                 }
 
-                if (!File.Exists(parsed.pathOnDisk))
+                if (!await FileExistsAsync(parsed.pathOnDisk))
                 {
                     _logger.Error($"File '{parsed.pathOnDisk}' not found");
                     continue;
@@ -73,8 +68,7 @@ namespace SiraLocalizer.Providers.Crowdin
 
                 try
                 {
-                    using StreamReader reader = new(parsed.pathOnDisk);
-                    content = await reader.ReadToEndAsync();
+                    content = await ReadFileAsync(parsed.pathOnDisk);
                 }
                 catch (IOException ex)
                 {
@@ -99,7 +93,7 @@ namespace SiraLocalizer.Providers.Crowdin
                 return;
             }
 
-            CrowdinDistributionManifest manifest = DeserializeManifest(manifestContent);
+            CrowdinDistributionManifest manifest = await DeserializeManifestAsync(manifestContent);
 
             if (manifest == null)
             {
@@ -112,17 +106,12 @@ namespace SiraLocalizer.Providers.Crowdin
                 return;
             }
 
-            // wipe existing files to avoid conflicts if names changed
-            if (Directory.Exists(kDownloadedFolder))
-            {
-                Directory.Delete(kDownloadedFolder, true);
-            }
-
-            Directory.CreateDirectory(kDownloadedFolder);
+            LocalizationPreparation.Result reset = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ResetDirectory, kDownloadedFolder);
+            reset.ThrowIfFailed();
 
             foreach (string filePath in manifest.files)
             {
-                ParsedPathData parsed = ParsePath(filePath);
+                LocalizationPreparation.CrowdinPath parsed = await ParsePathAsync(filePath);
 
                 if (!LocalizationDefinition.IsDefinitionLoaded(parsed.id))
                 {
@@ -133,8 +122,8 @@ namespace SiraLocalizer.Providers.Crowdin
                 await DownloadFileAsync(parsed.relativePath, manifest.timestamp, parsed.pathOnDisk);
             }
 
-            using StreamWriter writer = new(kManifestFilePath);
-            await writer.WriteAsync(manifestContent);
+            LocalizationPreparation.Result written = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.WriteText, kManifestFilePath, manifestContent);
+            written.ThrowIfFailed();
         }
 
         public async Task<bool> CheckForUpdatesAsync(CancellationToken cancellationToken)
@@ -146,16 +135,20 @@ namespace SiraLocalizer.Providers.Crowdin
                 return false;
             }
 
-            CrowdinDistributionManifest manifest = DeserializeManifest(manifestContent);
+            CrowdinDistributionManifest manifest = await DeserializeManifestAsync(manifestContent);
 
             return manifest != null && await CheckIfUpdateAvailableAsync(manifest);
         }
 
-        private CrowdinDistributionManifest DeserializeManifest(string manifestContent)
+        private async Task<CrowdinDistributionManifest> DeserializeManifestAsync(string manifestContent)
         {
             try
             {
-                return JsonConvert.DeserializeObject<CrowdinDistributionManifest>(manifestContent);
+                if (JsonConvert.DefaultSettings != null)
+                    return JsonConvert.DeserializeObject<CrowdinDistributionManifest>(manifestContent);
+                LocalizationPreparation.Result prepared = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ParseCrowdinManifest, manifestContent);
+                prepared.ThrowIfFailed();
+                return prepared.manifest;
             }
             catch (JsonException ex)
             {
@@ -191,13 +184,13 @@ namespace SiraLocalizer.Providers.Crowdin
 
         private async Task<bool> CheckIfUpdateAvailableAsync(CrowdinDistributionManifest remoteManifest)
         {
-            if (!File.Exists(kManifestFilePath) || !Directory.Exists(kDownloadedFolder)) return true;
+            if (!await HasLocalCacheAsync()) return true;
 
             foreach (string filePath in remoteManifest.files)
             {
-                ParsedPathData parsed = ParsePath(filePath);
+                LocalizationPreparation.CrowdinPath parsed = await ParsePathAsync(filePath);
 
-                if (LocalizationDefinition.IsDefinitionLoaded(parsed.id) && !File.Exists(parsed.pathOnDisk))
+                if (LocalizationDefinition.IsDefinitionLoaded(parsed.id) && !await FileExistsAsync(parsed.pathOnDisk))
                 {
                     return true;
                 }
@@ -208,40 +201,39 @@ namespace SiraLocalizer.Providers.Crowdin
             return localManifest?.timestamp != remoteManifest.timestamp;
         }
 
-        private ParsedPathData ParsePath(string filePath)
+        private static async Task<bool> HasLocalCacheAsync()
         {
-            if (!kValidPathRegex.IsMatch(filePath))
-            {
-                throw new ArgumentException($"Path '{filePath}' is invalid", nameof(filePath));
-            }
-
-            string relativePath = filePath.Substring(1);
-            string pathOnDisk = Path.Combine(kDownloadedFolder, relativePath);
-            string id = Path.ChangeExtension(relativePath, null);
-
-            return new ParsedPathData
-            {
-                id = id,
-                pathOnDisk = pathOnDisk,
-                relativePath = relativePath,
-            };
+            LocalizationPreparation.Result result = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.CheckCrowdinCache, kManifestFilePath, kDownloadedFolder);
+            result.ThrowIfFailed();
+            return result.exists;
         }
 
-        private readonly struct ParsedPathData
+        private static async Task<bool> FileExistsAsync(string path)
         {
-            public string id { get; init; }
+            LocalizationPreparation.Result result = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.CheckFile, path);
+            result.ThrowIfFailed();
+            return result.exists;
+        }
 
-            public string pathOnDisk { get; init; }
+        private static async Task<LocalizationPreparation.CrowdinPath> ParsePathAsync(string filePath)
+        {
+            LocalizationPreparation.Result result = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ParseCrowdinPath, filePath, kDownloadedFolder);
+            result.ThrowIfFailed();
+            return result.crowdinPath;
+        }
 
-            public string relativePath { get; init; }
+        private static async Task<string> ReadFileAsync(string path)
+        {
+            LocalizationPreparation.Result result = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadFile, path);
+            result.ThrowIfFailed();
+            return result.text;
         }
 
         private async Task<CrowdinDistributionManifest> ReadLocalManifestAsync()
         {
             try
             {
-                using StreamReader reader = new(kManifestFilePath);
-                return DeserializeManifest(await reader.ReadToEndAsync());
+                return await DeserializeManifestAsync(await ReadFileAsync(kManifestFilePath));
             }
             catch (IOException ex)
             {
@@ -271,23 +263,13 @@ namespace SiraLocalizer.Providers.Crowdin
                 return;
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(filePath));
+            LocalizationPreparation.Result directory = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.CreateFileDirectory, filePath);
+            directory.ThrowIfFailed();
 
             byte[] data = request.downloadHandler.data;
 
-            // depending on the Unity version UnityWebRequest might accept but not decompress gzipped data so check for magic bytes
-            if (data[0] == 0x1f && data[1] == 0x8b)
-            {
-                using var memoryStream = new MemoryStream(data);
-                using var gzipStream = new GZipStream(memoryStream, CompressionMode.Decompress);
-                using var fileStream = new FileStream(filePath, FileMode.Create);
-                await gzipStream.CopyToAsync(fileStream);
-            }
-            else
-            {
-                using var fileStream = new FileStream(filePath, FileMode.Create);
-                await fileStream.WriteAsync(data, 0, data.Length);
-            }
+            LocalizationPreparation.Result written = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.WriteCrowdinFile, filePath, bytes: data);
+            written.ThrowIfFailed();
         }
     }
 }
