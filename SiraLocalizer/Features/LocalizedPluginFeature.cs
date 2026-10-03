@@ -70,7 +70,10 @@ namespace SiraLocalizer.Features
             }
 
             string[] keys;
-            if (resourceStream.GetType() == typeof(UnmanagedMemoryStream) && pluginMetadata.Assembly.GetType().Assembly == typeof(Stream).Assembly)
+            Type streamType = resourceStream.GetType();
+            bool ownedRuntimeStream = streamType.Assembly == typeof(Stream).Assembly &&
+                (streamType == typeof(UnmanagedMemoryStream) || streamType.FullName == "System.Reflection.RuntimeAssembly+UnmanagedMemoryStreamForModule");
+            if (ownedRuntimeStream && pluginMetadata.Assembly.GetType().Assembly == typeof(Stream).Assembly)
             {
                 try
                 {
