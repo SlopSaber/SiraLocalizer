@@ -366,6 +366,7 @@ namespace SiraLocalizer.Utilities
         private static void ExportBaseGameCsv(Result result, string path, ExportInput input)
         {
             var messages = new List<ExportMessage>();
+            int[] supportedLanguages = [(int)LocalizationLanguage.French, (int)LocalizationLanguage.Spanish, (int)LocalizationLanguage.German, (int)LocalizationLanguage.Japanese, (int)LocalizationLanguage.Korean];
             try
             {
                 using var writer = new StreamWriter(path);
@@ -385,7 +386,7 @@ namespace SiraLocalizer.Utilities
                         string english = row.ElementAtOrDefault(2);
                         string[] languages = new string[input.languageCount];
                         if (key.Equals(english, StringComparison.Ordinal)) continue;
-                        foreach (int language in new[] { (int)LocalizationLanguage.French, (int)LocalizationLanguage.Spanish, (int)LocalizationLanguage.German, (int)LocalizationLanguage.Japanese, (int)LocalizationLanguage.Korean })
+                        foreach (int language in supportedLanguages)
                             languages[language - 1] = EscapeExportValue(row.ElementAtOrDefault(language + 2));
 
                         string pattern = null;
