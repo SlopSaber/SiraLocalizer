@@ -381,7 +381,7 @@ namespace SiraLocalizer.Utilities
                     foreach (List<string> row in rows.SkipWhile(r => r[0] != "Polyglot").Skip(1))
                     {
                         string key = row.ElementAtOrDefault(0);
-                        if (key == "PSVR_SAFE_AREA_CONFIRMATION_TEXT" || key == "PSVR2_CONTROLLER_REQUEST") continue;
+                        if (key is "PSVR_SAFE_AREA_CONFIRMATION_TEXT" or "PSVR2_CONTROLLER_REQUEST") continue;
                         string context = row.ElementAtOrDefault(1);
                         string english = row.ElementAtOrDefault(2);
                         string[] languages = new string[input.languageCount];
