@@ -145,7 +145,7 @@ namespace SiraLocalizer.UI
                     rows[i] = new LocalizationPreparation.StatusRow(status.name, status.percentTranslated,
                         status.percentTranslated is < 100 and > 0 ? Mathf.Clamp(status.percentTranslated, 1, 99) : 0);
                 }
-                NumberFormatInfo format = NumberFormatInfo.ReadOnly((NumberFormatInfo)culture.NumberFormat.Clone());
+                var format = NumberFormatInfo.ReadOnly((NumberFormatInfo)culture.NumberFormat.Clone());
                 LocalizationPreparation.Result prepared = LocalizationPreparation.Complete(LocalizationPreparation.PrepareStatusGroups(rows, format));
                 prepared.ThrowIfFailed();
                 _translationStatus.text = string.Empty;
