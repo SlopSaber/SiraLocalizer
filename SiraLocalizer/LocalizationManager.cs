@@ -18,9 +18,6 @@ namespace SiraLocalizer
     {
         internal const float kMinimumTranslatedPercent = 0.50f;
 
-        // Unicode white space characters + line breaks https://www.fileformat.info/info/unicode/category/Zs/list.htm
-        private static readonly char[] kWhiteSpaceCharacters = [' ', '\n', '\r', '\t', '\x00A0', '\x1680', '\x2000', '\x2001', '\x2002', '\x2003', '\x2004', '\x2005', '\x2006', '\x2007', '\x2008', '\x2009', '\x200A', '\x202F', '\x205F', '\x3000'];
-
         private readonly SiraLog _logger;
         private readonly Settings _config;
         private readonly List<ILocalizationProvider> _localizationProviders;
@@ -173,59 +170,46 @@ namespace SiraLocalizer
             {
                 int total = 0;
                 int translated = 0;
+                var pendingRows = new List<LocalizationPreparation.TranslationRow>();
 
-                foreach (string key in def.keys)
+                void CompleteRows()
                 {
-                    if (!languageStrings.TryGetValue(key, out List<string> strings))
+                    if (pendingRows.Count == 0) return;
+                    LocalizationPreparation.TranslationRow[] rows = pendingRows.ToArray();
+                    pendingRows.Clear();
+                    LocalizationPreparation.Result prepared = LocalizationPreparation.Complete(LocalizationPreparation.PrepareTranslationCounts(rows));
+                    prepared.ThrowIfFailed();
+                    total += prepared.totalWords;
+                    translated += prepared.translatedWords;
+                }
+
+                try
+                {
+                    foreach (string key in def.keys)
                     {
-                        _logger.Warn($"Key '{key}' does not exist");
-                        continue;
+                        if (!languageStrings.TryGetValue(key, out List<string> strings))
+                        {
+                            CompleteRows();
+                            _logger.Warn($"Key '{key}' does not exist");
+                            continue;
+                        }
+                        if (strings.Count == 0) continue;
+                        pendingRows.Add(new LocalizationPreparation.TranslationRow(key,
+                            strings[(int)LocalizationLanguage.English], strings.ElementAtOrDefault((int)language)));
                     }
-
-                    if (strings.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    string english = strings[(int)LocalizationLanguage.English];
-
-                    if (key.Equals(english, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    int words = CountWords(english);
-                    total += words;
-
-                    if (!string.IsNullOrWhiteSpace(strings.ElementAtOrDefault((int)language)))
-                    {
-                        translated += words;
-                    }
+                    CompleteRows();
+                }
+                catch
+                {
+                    // Earlier row failures must precede a later native lookup or logger failure.
+                    CompleteRows();
+                    throw;
                 }
 
                 statuses.Add(new TranslationStatus(def.name, total, translated));
             }
 
             return statuses;
-        }
-
-        private static int CountWords(string text)
-        {
-            int words = 0;
-            bool inWord = false;
-            foreach (char character in text)
-            {
-                if (Array.IndexOf(kWhiteSpaceCharacters, character) >= 0)
-                {
-                    inWord = false;
-                }
-                else if (!inWord)
-                {
-                    words++;
-                    inWord = true;
-                }
-            }
-            return words;
         }
 
         [AffinityPatch(typeof(LocalizationImporter), nameof(LocalizationImporter.ImportFromFiles))]
@@ -300,28 +284,11 @@ namespace SiraLocalizer
                 yield break;
             }
 
-            foreach (int lang in Enum.GetValues(typeof(Locale)))
-            {
-                if (string.IsNullOrWhiteSpace(languageNames.ElementAtOrDefault(lang))) continue;
-                if ((Locale)lang is Locale.DebugKeys or Locale.DebugEnglishReverted or Locale.DebugEntryWithMaxLength) continue;
-
-                int count = 0;
-
-                foreach (List<string> localizations in languageStrings.Values)
-                {
-                    if (!string.IsNullOrWhiteSpace(localizations.ElementAtOrDefault(lang)))
-                    {
-                        ++count;
-                    }
-                }
-
-                float percentTranslated = (float)count / languageStrings.Count;
-
-                if (percentTranslated > kMinimumTranslatedPercent)
-                {
-                    yield return (Locale)lang;
-                }
-            }
+            string[][] rows = languageStrings.Values.Select(values => values?.ToArray()).ToArray();
+            LocalizationPreparation.Result prepared = LocalizationPreparation.Complete(LocalizationPreparation.PrepareSupportedLanguages(
+                languageNames?.ToArray(), rows, languageStrings.Count, kMinimumTranslatedPercent));
+            foreach (Locale language in prepared.supportedLanguages) yield return language;
+            prepared.ThrowIfFailed();
         }
     }
 }

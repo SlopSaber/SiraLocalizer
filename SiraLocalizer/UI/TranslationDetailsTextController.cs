@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using BGLib.Polyglot;
 using HMUI;
@@ -134,6 +135,30 @@ namespace SiraLocalizer.UI
             _credits.text = string.Format(Localization.Instance.Get("TRANSLATED_BY", language), !string.IsNullOrWhiteSpace(contributors) ? contributors : "—");
 
             List<TranslationStatus> statuses = _localizationManager.GetTranslationStatuses((Locale)language);
+            CultureInfo culture = CultureInfo.CurrentCulture;
+            if (culture.GetType() == typeof(CultureInfo))
+            {
+                var rows = new LocalizationPreparation.StatusRow[statuses.Count];
+                for (int i = 0; i < statuses.Count; i++)
+                {
+                    TranslationStatus status = statuses[i];
+                    rows[i] = new LocalizationPreparation.StatusRow(status.name, status.percentTranslated,
+                        status.percentTranslated is < 100 and > 0 ? Mathf.Clamp(status.percentTranslated, 1, 99) : 0);
+                }
+                NumberFormatInfo format = NumberFormatInfo.ReadOnly((NumberFormatInfo)culture.NumberFormat.Clone());
+                LocalizationPreparation.Result prepared = LocalizationPreparation.Complete(LocalizationPreparation.PrepareStatusGroups(rows, format));
+                prepared.ThrowIfFailed();
+                _translationStatus.text = string.Empty;
+                if (prepared.fullyTranslated != null)
+                    _translationStatus.text += string.Format(Localization.Instance.Get("TRANSLATION_STATUS_FULL", language), prepared.fullyTranslated) + "\n";
+                if (prepared.partiallyTranslated != null)
+                    _translationStatus.text += string.Format(Localization.Instance.Get("TRANSLATION_STATUS_PARTIAL", language), prepared.partiallyTranslated) + "\n";
+                if (prepared.notSupported != null)
+                    _translationStatus.text += string.Format(Localization.Instance.Get("TRANSLATION_STATUS_NONE", language), prepared.notSupported) + "\n";
+                _credits.gameObject.SetActive(true);
+                _translationStatus.gameObject.SetActive(true);
+                return;
+            }
             var fullyTranslated = statuses.Where(s => s.percentTranslated == 100).Select(s => s.name).ToList();
             var partiallyTranslated = statuses.Where(s => s.percentTranslated is < 100 and > 0).Select(s => $"{s.name} ({Mathf.Clamp(s.percentTranslated, 1, 99):0}%)").ToList();
             var notSupported = statuses.Where(s => s.percentTranslated == 0).Select(s => s.name).ToList();

@@ -46,6 +46,65 @@ namespace SiraLocalizer.Utilities
             ParseApiBuilds,
             ExportBaseGameCsv,
             ReadFeatureKeys,
+            CountTranslationRows,
+            CountSupportedLanguages,
+            GroupTranslationStatuses,
+        }
+
+        internal readonly struct TranslationRow
+        {
+            internal readonly string key;
+            internal readonly string english;
+            internal readonly string translation;
+
+            internal TranslationRow(string key, string english, string translation)
+            {
+                this.key = key;
+                this.english = english;
+                this.translation = translation;
+            }
+        }
+
+        internal readonly struct StatusRow
+        {
+            internal readonly string name;
+            internal readonly float percentage;
+            internal readonly float clampedPercentage;
+
+            internal StatusRow(string name, float percentage, float clampedPercentage)
+            {
+                this.name = name;
+                this.percentage = percentage;
+                this.clampedPercentage = clampedPercentage;
+            }
+        }
+
+        private sealed class LanguageInput
+        {
+            internal readonly string[] names;
+            internal readonly string[][] rows;
+            internal readonly int dictionaryCount;
+            internal readonly float threshold;
+
+            internal LanguageInput(string[] names, string[][] rows, int dictionaryCount, float threshold)
+            {
+                this.names = names;
+                this.rows = rows;
+                this.dictionaryCount = dictionaryCount;
+                this.threshold = threshold;
+            }
+        }
+
+        private sealed class SummaryInput
+        {
+            internal readonly StatusRow[] rows;
+            internal readonly NumberFormatInfo format;
+
+            internal SummaryInput(StatusRow[] rows, NumberFormatInfo format)
+            {
+                this.rows = rows;
+                this.format = format;
+            }
         }
 
         internal readonly struct ExportAsset
@@ -130,6 +189,12 @@ namespace SiraLocalizer.Utilities
             internal AbstractProjectBuildResponse[] builds;
             internal ExportMessage[] exportMessages = Array.Empty<ExportMessage>();
             internal string[] keys;
+            internal int totalWords;
+            internal int translatedWords;
+            internal Locale[] supportedLanguages = Array.Empty<Locale>();
+            internal string fullyTranslated;
+            internal string partiallyTranslated;
+            internal string notSupported;
 
             internal void ThrowIfFailed()
             {
@@ -148,8 +213,11 @@ namespace SiraLocalizer.Utilities
             internal readonly TaskCompletionSource<Result> completion;
             internal readonly ExportInput exportInput;
             internal readonly Stream resourceStream;
+            internal readonly TranslationRow[] translationRows;
+            internal readonly LanguageInput languageInput;
+            internal readonly SummaryInput summaryInput;
 
-            internal Request(Operation operation, string value, string secondaryValue, byte[] bytes, long fileLease, ExportInput exportInput = null, Stream resourceStream = null)
+            internal Request(Operation operation, string value, string secondaryValue, byte[] bytes, long fileLease, ExportInput exportInput = null, Stream resourceStream = null, TranslationRow[] translationRows = null, LanguageInput languageInput = null, SummaryInput summaryInput = null)
             {
                 this.operation = operation;
                 this.value = value;
@@ -158,6 +226,9 @@ namespace SiraLocalizer.Utilities
                 this.fileLease = fileLease;
                 this.exportInput = exportInput;
                 this.resourceStream = resourceStream;
+                this.translationRows = translationRows;
+                this.languageInput = languageInput;
+                this.summaryInput = summaryInput;
                 completion = new TaskCompletionSource<Result>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
@@ -184,6 +255,105 @@ namespace SiraLocalizer.Utilities
         internal static Task<Result> PrepareFeatureKeys(Stream ownedStream)
         {
             return Queue(new Request(Operation.ReadFeatureKeys, null, null, null, 0, resourceStream: ownedStream));
+        }
+
+        internal static Task<Result> PrepareTranslationCounts(TranslationRow[] ownedRows)
+        {
+            return Queue(new Request(Operation.CountTranslationRows, null, null, null, 0, translationRows: ownedRows));
+        }
+
+        internal static Task<Result> PrepareSupportedLanguages(string[] ownedNames, string[][] ownedRows, int dictionaryCount, float threshold)
+        {
+            return Queue(new Request(Operation.CountSupportedLanguages, null, null, null, 0,
+                languageInput: new LanguageInput(ownedNames, ownedRows, dictionaryCount, threshold)));
+        }
+
+        internal static Task<Result> PrepareStatusGroups(StatusRow[] ownedRows, NumberFormatInfo ownedFormat)
+        {
+            return Queue(new Request(Operation.GroupTranslationStatuses, null, null, null, 0,
+                summaryInput: new SummaryInput(ownedRows, ownedFormat)));
+        }
+
+        internal static Result Complete(Task<Result> task)
+        {
+            if (!task.IsCompleted)
+            {
+                using var completed = new ManualResetEventSlim();
+                task.ContinueWith(static (_, state) => ((ManualResetEventSlim)state).Set(), completed,
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                completed.Wait();
+            }
+            return task.GetAwaiter().GetResult();
+        }
+
+        private static readonly char[] kWhiteSpaceCharacters = [' ', '\n', '\r', '\t', '\x00A0', '\x1680', '\x2000', '\x2001', '\x2002', '\x2003', '\x2004', '\x2005', '\x2006', '\x2007', '\x2008', '\x2009', '\x200A', '\x202F', '\x205F', '\x3000'];
+
+        private static void CountTranslationRows(Result result, TranslationRow[] rows)
+        {
+            foreach (TranslationRow row in rows)
+            {
+                if (row.key.Equals(row.english, StringComparison.Ordinal)) continue;
+                int words = CountWords(row.english);
+                result.totalWords += words;
+                if (!string.IsNullOrWhiteSpace(row.translation)) result.translatedWords += words;
+            }
+        }
+
+        private static int CountWords(string text)
+        {
+            int words = 0;
+            bool inWord = false;
+            foreach (char character in text)
+            {
+                if (Array.IndexOf(kWhiteSpaceCharacters, character) >= 0)
+                {
+                    inWord = false;
+                }
+                else if (!inWord)
+                {
+                    words++;
+                    inWord = true;
+                }
+            }
+            return words;
+        }
+
+        private static void CountSupportedLanguages(Result result, LanguageInput input)
+        {
+            var supported = new List<Locale>();
+            try
+            {
+                foreach (int lang in Enum.GetValues(typeof(Locale)))
+                {
+                    if (string.IsNullOrWhiteSpace(input.names.ElementAtOrDefault(lang))) continue;
+                    if ((Locale)lang is Locale.DebugKeys or Locale.DebugEnglishReverted or Locale.DebugEntryWithMaxLength) continue;
+                    int count = 0;
+                    foreach (string[] row in input.rows)
+                        if (!string.IsNullOrWhiteSpace(row.ElementAtOrDefault(lang))) ++count;
+                    if ((float)count / input.dictionaryCount > input.threshold) supported.Add((Locale)lang);
+                }
+            }
+            finally
+            {
+                result.supportedLanguages = supported.ToArray();
+            }
+        }
+
+        private static void GroupTranslationStatuses(Result result, SummaryInput input)
+        {
+            var full = new List<string>();
+            var partial = new List<string>();
+            var none = new List<string>();
+            foreach (StatusRow row in input.rows)
+            {
+                if (row.percentage == 100) full.Add(row.name);
+                else if (row.percentage is < 100 and > 0)
+                    partial.Add(string.Format(input.format, "{0} ({1:0}%)", row.name, row.clampedPercentage));
+                else if (row.percentage == 0) none.Add(row.name);
+            }
+            result.fullyTranslated = full.Count > 0 ? string.Join(", ", full) : null;
+            result.partiallyTranslated = partial.Count > 0 ? string.Join(", ", partial) : null;
+            result.notSupported = none.Count > 0 ? string.Join(", ", none) : null;
         }
 
         private static Task<Result> Queue(Request request)
@@ -239,6 +409,15 @@ namespace SiraLocalizer.Utilities
             {
                 switch (request.operation)
                 {
+                    case Operation.CountTranslationRows:
+                        CountTranslationRows(result, request.translationRows);
+                        break;
+                    case Operation.CountSupportedLanguages:
+                        CountSupportedLanguages(result, request.languageInput);
+                        break;
+                    case Operation.GroupTranslationStatuses:
+                        GroupTranslationStatuses(result, request.summaryInput);
+                        break;
                     case Operation.ReadUserCatalog:
                         ReadUserCatalog(result, value);
                         break;
