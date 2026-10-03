@@ -44,6 +44,48 @@ namespace SiraLocalizer.Utilities
             ParseApiBuild,
             ParseApiDownload,
             ParseApiBuilds,
+            ExportBaseGameCsv,
+            ReadFeatureKeys,
+        }
+
+        internal readonly struct ExportAsset
+        {
+            internal readonly string name;
+            internal readonly string text;
+            internal readonly bool hasName;
+            internal readonly bool hasText;
+
+            internal ExportAsset(string name, string text, bool hasName, bool hasText)
+            {
+                this.name = name;
+                this.text = text;
+                this.hasName = hasName;
+                this.hasText = hasText;
+            }
+        }
+
+        internal readonly struct ExportMessage
+        {
+            internal readonly string text;
+            internal readonly bool warning;
+
+            internal ExportMessage(string text, bool warning = false)
+            {
+                this.text = text;
+                this.warning = warning;
+            }
+        }
+
+        private sealed class ExportInput
+        {
+            internal readonly int languageCount;
+            internal readonly ExportAsset[] assets;
+
+            internal ExportInput(int languageCount, ExportAsset[] assets)
+            {
+                this.languageCount = languageCount;
+                this.assets = assets;
+            }
         }
 
         internal readonly struct CrowdinPath
@@ -86,6 +128,8 @@ namespace SiraLocalizer.Utilities
             internal AbstractProjectBuildResponse buildResponse;
             internal DownloadLinkResponse downloadLink;
             internal AbstractProjectBuildResponse[] builds;
+            internal ExportMessage[] exportMessages = Array.Empty<ExportMessage>();
+            internal string[] keys;
 
             internal void ThrowIfFailed()
             {
@@ -102,14 +146,18 @@ namespace SiraLocalizer.Utilities
             internal readonly byte[] bytes;
             internal readonly long fileLease;
             internal readonly TaskCompletionSource<Result> completion;
+            internal readonly ExportInput exportInput;
+            internal readonly Stream resourceStream;
 
-            internal Request(Operation operation, string value, string secondaryValue, byte[] bytes, long fileLease)
+            internal Request(Operation operation, string value, string secondaryValue, byte[] bytes, long fileLease, ExportInput exportInput = null, Stream resourceStream = null)
             {
                 this.operation = operation;
                 this.value = value;
                 this.secondaryValue = secondaryValue;
                 this.bytes = bytes;
                 this.fileLease = fileLease;
+                this.exportInput = exportInput;
+                this.resourceStream = resourceStream;
                 completion = new TaskCompletionSource<Result>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
@@ -125,6 +173,21 @@ namespace SiraLocalizer.Utilities
         internal static Task<Result> Prepare(Operation operation, string value, string secondaryValue = null, byte[] bytes = null, long fileLease = 0)
         {
             var request = new Request(operation, value, secondaryValue, bytes, fileLease);
+            return Queue(request);
+        }
+
+        internal static Task<Result> PrepareExport(string path, int languageCount, ExportAsset[] assets)
+        {
+            return Queue(new Request(Operation.ExportBaseGameCsv, path, null, null, 0, new ExportInput(languageCount, assets)));
+        }
+
+        internal static Task<Result> PrepareFeatureKeys(Stream ownedStream)
+        {
+            return Queue(new Request(Operation.ReadFeatureKeys, null, null, null, 0, resourceStream: ownedStream));
+        }
+
+        private static Task<Result> Queue(Request request)
+        {
             lock (kGate)
             {
                 kRequests.Enqueue(request);
@@ -282,6 +345,13 @@ namespace SiraLocalizer.Utilities
                         for (int i = 0; i < items.Count; i++) values[i] = items[i].data;
                         result.builds = values;
                         break;
+                    case Operation.ExportBaseGameCsv:
+                        ExportBaseGameCsv(result, value, request.exportInput);
+                        break;
+                    case Operation.ReadFeatureKeys:
+                        using (var resourceReader = new StreamReader(request.resourceStream))
+                            result.keys = PolyglotUtil.GetKeysFromLocalizationAsset(resourceReader.ReadToEnd()).ToArray();
+                        break;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(request.operation), request.operation, null);
                 }
@@ -291,6 +361,73 @@ namespace SiraLocalizer.Utilities
                 result.error = error;
             }
             return result;
+        }
+
+        private static void ExportBaseGameCsv(Result result, string path, ExportInput input)
+        {
+            var messages = new List<ExportMessage>();
+            try
+            {
+                using var writer = new StreamWriter(path);
+                writer.WriteLine("Polyglot,100," + new string(',', input.languageCount));
+                foreach (ExportAsset asset in input.assets)
+                {
+                    if (!asset.hasName) break;
+                    messages.Add(new ExportMessage($"Processing '{asset.name}'"));
+                    if (!asset.hasText) break;
+
+                    List<List<string>> rows = CsvReader.Parse(asset.text);
+                    foreach (List<string> row in rows.SkipWhile(r => r[0] != "Polyglot").Skip(1))
+                    {
+                        string key = row.ElementAtOrDefault(0);
+                        if (key == "PSVR_SAFE_AREA_CONFIRMATION_TEXT" || key == "PSVR2_CONTROLLER_REQUEST") continue;
+                        string context = row.ElementAtOrDefault(1);
+                        string english = row.ElementAtOrDefault(2);
+                        string[] languages = new string[input.languageCount];
+                        if (key.Equals(english, StringComparison.Ordinal)) continue;
+                        foreach (int language in new[] { (int)LocalizationLanguage.French, (int)LocalizationLanguage.Spanish, (int)LocalizationLanguage.German, (int)LocalizationLanguage.Japanese, (int)LocalizationLanguage.Korean })
+                            languages[language - 1] = EscapeExportValue(row.ElementAtOrDefault(language + 2));
+
+                        string pattern = null;
+                        string replacement = null;
+                        switch (key)
+                        {
+                            case "MISSION_HELP_MIN_HANDS_MOVEMENT_TITLE":
+                            case "MISSION_HELP_MAX_HANDS_MOVEMENT":
+                                pattern = @"\.</color>";
+                                replacement = "</color>.";
+                                break;
+                            case "LABEL_MULTIPLAYER_MAINTENANCE_UPCOMING":
+                                pattern = "maintatance";
+                                replacement = "maintenance";
+                                break;
+                            case "TEXT_INVALID_PASSWORD":
+                                pattern = "You";
+                                replacement = "Your";
+                                break;
+                        }
+                        if (pattern != null)
+                        {
+                            string corrected = Regex.Replace(english, pattern, replacement);
+                            if (corrected == english)
+                                messages.Add(new ExportMessage($"Rule for '{key}' ('{pattern}' -> '{replacement}') did nothing on '{english}'", true));
+                            else english = corrected;
+                        }
+                        writer.WriteLine($"{EscapeExportValue(key)},{EscapeExportValue(context)},{EscapeExportValue(english)},{string.Join(",", languages)}");
+                    }
+                }
+            }
+            finally
+            {
+                result.exportMessages = messages.ToArray();
+            }
+        }
+
+        private static string EscapeExportValue(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return null;
+            if (!value.Contains(',') && !value.Contains('"') && !value.Contains('\n')) return value;
+            return "\"" + value.Replace("\"", "\"\"") + "\"";
         }
 
         private static T ParseApiJson<T>(byte[] data)

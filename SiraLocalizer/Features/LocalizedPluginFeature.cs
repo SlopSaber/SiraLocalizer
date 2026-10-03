@@ -1,4 +1,6 @@
+using System;
 using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
 using IPA.Loader;
 using IPA.Loader.Features;
@@ -67,9 +69,29 @@ namespace SiraLocalizer.Features
                 return;
             }
 
-            using var reader = new StreamReader(resourceStream);
-
-            LocalizationDefinition.Add("plugins/" + _localizedPlugin.id, _localizedPlugin.name, PolyglotUtil.GetKeysFromLocalizationAsset(reader.ReadToEnd()));
+            string[] keys;
+            if (resourceStream.GetType().Assembly == typeof(Stream).Assembly)
+            {
+                try
+                {
+                    var task = LocalizationPreparation.PrepareFeatureKeys(resourceStream);
+                    if (!task.IsCompleted) ((IAsyncResult)task).AsyncWaitHandle.WaitOne();
+                    LocalizationPreparation.Result result = task.GetAwaiter().GetResult();
+                    result.ThrowIfFailed();
+                    keys = result.keys;
+                }
+                catch
+                {
+                    resourceStream.Dispose();
+                    throw;
+                }
+            }
+            else
+            {
+                using var reader = new StreamReader(resourceStream);
+                keys = PolyglotUtil.GetKeysFromLocalizationAsset(reader.ReadToEnd()).ToArray();
+            }
+            LocalizationDefinition.AddPrepared("plugins/" + _localizedPlugin.id, _localizedPlugin.name, keys);
         }
     }
 }

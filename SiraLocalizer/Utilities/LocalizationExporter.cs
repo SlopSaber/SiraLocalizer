@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using BGLib.Polyglot;
 using IPA.Utilities;
 using SiraUtil.Logging;
@@ -10,29 +10,13 @@ using Zenject;
 
 namespace SiraLocalizer.Utilities
 {
-    internal class LocalizationExporter : IInitializable
+    internal class LocalizationExporter : IInitializable, ITickable, IDisposable
     {
-        // languages supported by the base game
-        private static readonly LocalizationLanguage[] kSupportedLanguages = [LocalizationLanguage.French, LocalizationLanguage.Spanish, LocalizationLanguage.German, LocalizationLanguage.Japanese, LocalizationLanguage.Korean];
-
-        // keys that aren't actually used
-        private static readonly string[] kLocalizationKeyIgnoreList =
-        {
-            "PSVR_SAFE_AREA_CONFIRMATION_TEXT",
-            "PSVR2_CONTROLLER_REQUEST",
-        };
-
-        // because there's typos and weirdness
-        private static readonly Dictionary<string, (Regex find, string replace)> kCorrections = new()
-        {
-            { "MISSION_HELP_MIN_HANDS_MOVEMENT_TITLE", (new Regex(@"\.</color>"), "</color>.") },
-            { "MISSION_HELP_MAX_HANDS_MOVEMENT", (new Regex(@"\.</color>"), "</color>.") },
-            { "LABEL_MULTIPLAYER_MAINTENANCE_UPCOMING", (new Regex(@"maintatance"), "maintenance") },
-            { "TEXT_INVALID_PASSWORD", (new Regex(@"You"), "Your") },
-        };
-
         private readonly SiraLog _logger;
         private readonly LocalizationModel _localizationModel;
+        private Task<LocalizationPreparation.Result> _preparation;
+        private Exception _captureError;
+        private bool _disposed;
 
         internal LocalizationExporter(SiraLog logger, LocalizationModel localizationModel)
         {
@@ -42,83 +26,75 @@ namespace SiraLocalizer.Utilities
 
         public void Initialize()
         {
-            DumpBaseGameLocalization();
-        }
-
-        private void DumpBaseGameLocalization()
-        {
             string filePath = Path.Combine(UnityGame.InstallPath, "beat-saber.csv");
-            int numberOfLanguages = Enum.GetNames(typeof(Locale)).Length - 1; // don't include Locale.English
-
+            int numberOfLanguages = Enum.GetNames(typeof(Locale)).Length - 1;
             _logger.Info($"Dumping base game localization to '{filePath}'");
+
+            var assets = new List<LocalizationPreparation.ExportAsset>();
+            string name = null;
+            bool hasName = false;
+            try
+            {
+                foreach (LocalizationAsset asset in _localizationModel.inputFiles.Take(2))
+                {
+                    name = null;
+                    hasName = false;
+                    name = asset.TextAsset.name;
+                    hasName = true;
+                    string text = asset.TextAsset.text;
+                    assets.Add(new LocalizationPreparation.ExportAsset(name, text, true, true));
+                    name = null;
+                    hasName = false;
+                }
+            }
+            catch (Exception error)
+            {
+                _captureError = error;
+                assets.Add(new LocalizationPreparation.ExportAsset(name, null, hasName, false));
+            }
 
             try
             {
-                using (var writer = new StreamWriter(filePath))
-                {
-                    writer.WriteLine("Polyglot,100," + new string(',', numberOfLanguages));
-
-                    foreach (LocalizationAsset baseGameAsset in _localizationModel.inputFiles.Take(2))
-                    {
-                        _logger.Info($"Processing '{baseGameAsset.TextAsset.name}'");
-
-                        List<List<string>> rows = CsvReader.Parse(baseGameAsset.TextAsset.text);
-
-                        foreach (List<string> row in rows.SkipWhile(r => r[0] != "Polyglot").Skip(1))
-                        {
-                            string key = row.ElementAtOrDefault(0);
-
-                            if (kLocalizationKeyIgnoreList.Contains(key))
-                            {
-                                continue;
-                            }
-
-                            string context = row.ElementAtOrDefault(1);
-                            string english = row.ElementAtOrDefault(2);
-                            string[] languages = new string[numberOfLanguages];
-
-                            if (key.Equals(english, StringComparison.Ordinal))
-                            {
-                                continue;
-                            }
-
-                            foreach (int supportedLanguage in kSupportedLanguages)
-                            {
-                                languages[supportedLanguage - 1] = EscapeCsvValue(row.ElementAtOrDefault(supportedLanguage + 2));
-                            }
-
-                            if (kCorrections.TryGetValue(key, out var rule))
-                            {
-                                string result = rule.find.Replace(english, rule.replace);
-
-                                if (result == english)
-                                {
-                                    _logger.Warn($"Rule for '{key}' ('{rule.find}' -> '{rule.replace}') did nothing on '{english}'");
-                                }
-                                else
-                                {
-                                    english = result;
-                                }
-                            }
-
-                            writer.WriteLine($"{EscapeCsvValue(key)},{EscapeCsvValue(context)},{EscapeCsvValue(english)},{string.Join(",", languages)}");
-                        }
-                    }
-                }
+                _preparation = LocalizationPreparation.PrepareExport(filePath, numberOfLanguages, assets.ToArray());
             }
-            catch (Exception ex)
+            catch (Exception error)
             {
-                _logger.Error("Could not dump base game localization");
-                _logger.Error(ex.ToString());
+                LogFailure(error);
+                _captureError = null;
             }
         }
 
-        private static string EscapeCsvValue(string value)
+        public void Tick()
         {
-            if (string.IsNullOrEmpty(value)) return null;
-            if (!value.Contains(',') && !value.Contains('"') && !value.Contains('\n')) return value;
+            if (_disposed || _preparation == null || !_preparation.IsCompleted) return;
+            LocalizationPreparation.Result result = _preparation.GetAwaiter().GetResult();
+            _preparation = null;
+            foreach (LocalizationPreparation.ExportMessage message in result.exportMessages)
+            {
+                if (message.warning) _logger.Warn(message.text);
+                else _logger.Info(message.text);
+            }
+            Exception error = result.error ?? _captureError;
+            _captureError = null;
+            if (error != null) LogFailure(error);
+        }
 
-            return "\"" + value.Replace("\"", "\"\"") + "\"";
+        public void Dispose()
+        {
+            _disposed = true;
+            if (_preparation != null)
+            {
+                if (!_preparation.IsCompleted) ((IAsyncResult)_preparation).AsyncWaitHandle.WaitOne();
+                _ = _preparation.GetAwaiter().GetResult();
+                _preparation = null;
+            }
+            _captureError = null;
+        }
+
+        private void LogFailure(Exception error)
+        {
+            _logger.Error("Could not dump base game localization");
+            _logger.Error(error.ToString());
         }
     }
 }

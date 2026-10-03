@@ -21,6 +21,11 @@ namespace SiraLocalizer.Records
             kLoadedDefinitions.Add(id, new LocalizationDefinition(id, name, keys.ToArray()));
         }
 
+        internal static void AddPrepared(string id, string name, string[] ownedKeys)
+        {
+            kLoadedDefinitions.Add(id, new LocalizationDefinition(id, name, ownedKeys));
+        }
+
         public static bool Remove(string id)
         {
             return kLoadedDefinitions.Remove(id);

@@ -42,7 +42,7 @@ namespace SiraLocalizer.Installers
 
             if (Environment.GetCommandLineArgs().Contains("--dump-localization"))
             {
-                Container.Bind<IInitializable>().To<LocalizationExporter>().AsSingle();
+                Container.Bind(typeof(IInitializable), typeof(ITickable), typeof(IDisposable)).To<LocalizationExporter>().AsSingle();
             }
         }
     }
