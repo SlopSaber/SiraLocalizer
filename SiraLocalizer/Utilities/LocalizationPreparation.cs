@@ -49,6 +49,7 @@ namespace SiraLocalizer.Utilities
             CountTranslationRows,
             CountSupportedLanguages,
             GroupTranslationStatuses,
+            CheckTranslation,
         }
 
         internal readonly struct TranslationRow
@@ -191,6 +192,7 @@ namespace SiraLocalizer.Utilities
             internal string[] keys;
             internal int totalWords;
             internal int translatedWords;
+            internal bool keyMatched;
             internal Locale[] supportedLanguages = Array.Empty<Locale>();
             internal string fullyTranslated;
             internal string partiallyTranslated;
@@ -289,7 +291,11 @@ namespace SiraLocalizer.Utilities
         {
             foreach (TranslationRow row in rows)
             {
-                if (row.key.Equals(row.english, StringComparison.Ordinal)) continue;
+                if (row.key.Equals(row.english, StringComparison.Ordinal))
+                {
+                    result.keyMatched = true;
+                    continue;
+                }
                 int words = CountWords(row.english);
                 result.totalWords += words;
                 if (!string.IsNullOrWhiteSpace(row.translation)) result.translatedWords += words;
@@ -414,6 +420,9 @@ namespace SiraLocalizer.Utilities
                         break;
                     case Operation.GroupTranslationStatuses:
                         GroupTranslationStatuses(result, request.summaryInput);
+                        break;
+                    case Operation.CheckTranslation:
+                        result.exists = !string.IsNullOrWhiteSpace(value);
                         break;
                     case Operation.ReadUserCatalog:
                         ReadUserCatalog(result, value);

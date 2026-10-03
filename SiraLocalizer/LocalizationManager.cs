@@ -171,6 +171,10 @@ namespace SiraLocalizer
                 int total = 0;
                 int translated = 0;
                 var pendingRows = new List<LocalizationPreparation.TranslationRow>();
+                IEqualityComparer<string> comparer = languageStrings.Comparer;
+                bool canBatch = def.keys is string[] &&
+                    (ReferenceEquals(comparer, EqualityComparer<string>.Default) ||
+                     ReferenceEquals(comparer, StringComparer.Ordinal) || ReferenceEquals(comparer, StringComparer.OrdinalIgnoreCase));
 
                 void CompleteRows()
                 {
@@ -194,6 +198,20 @@ namespace SiraLocalizer
                             continue;
                         }
                         if (strings.Count == 0) continue;
+                        if (!canBatch || strings.GetType() != typeof(List<string>))
+                        {
+                            CompleteRows();
+                            LocalizationPreparation.Result counted = LocalizationPreparation.Complete(LocalizationPreparation.PrepareTranslationCounts(
+                                [new LocalizationPreparation.TranslationRow(key, strings[(int)LocalizationLanguage.English], null)]));
+                            counted.ThrowIfFailed();
+                            if (counted.keyMatched) continue;
+                            total += counted.totalWords;
+                            LocalizationPreparation.Result translatedRow = LocalizationPreparation.Complete(LocalizationPreparation.Prepare(
+                                LocalizationPreparation.Operation.CheckTranslation, strings.ElementAtOrDefault((int)language)));
+                            translatedRow.ThrowIfFailed();
+                            if (translatedRow.exists) translated += counted.totalWords;
+                            continue;
+                        }
                         pendingRows.Add(new LocalizationPreparation.TranslationRow(key,
                             strings[(int)LocalizationLanguage.English], strings.ElementAtOrDefault((int)language)));
                     }
@@ -281,6 +299,29 @@ namespace SiraLocalizer
 
             if (!languageStrings.TryGetValue("LANGUAGE_THIS", out List<string> languageNames))
             {
+                yield break;
+            }
+
+            if ((languageNames != null && languageNames.GetType() != typeof(List<string>)) ||
+                languageStrings.Values.Any(values => values != null && values.GetType() != typeof(List<string>)))
+            {
+                foreach (int lang in Enum.GetValues(typeof(Locale)))
+                {
+                    LocalizationPreparation.Result named = LocalizationPreparation.Complete(LocalizationPreparation.Prepare(
+                        LocalizationPreparation.Operation.CheckTranslation, languageNames.ElementAtOrDefault(lang)));
+                    named.ThrowIfFailed();
+                    if (!named.exists) continue;
+                    if ((Locale)lang is Locale.DebugKeys or Locale.DebugEnglishReverted or Locale.DebugEntryWithMaxLength) continue;
+                    int count = 0;
+                    foreach (List<string> values in languageStrings.Values)
+                    {
+                        LocalizationPreparation.Result translatedRow = LocalizationPreparation.Complete(LocalizationPreparation.Prepare(
+                            LocalizationPreparation.Operation.CheckTranslation, values.ElementAtOrDefault(lang)));
+                        translatedRow.ThrowIfFailed();
+                        if (translatedRow.exists) ++count;
+                    }
+                    if ((float)count / languageStrings.Count > kMinimumTranslatedPercent) yield return (Locale)lang;
+                }
                 yield break;
             }
 
