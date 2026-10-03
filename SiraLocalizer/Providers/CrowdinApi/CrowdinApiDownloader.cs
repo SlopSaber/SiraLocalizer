@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -74,7 +73,9 @@ namespace SiraLocalizer.Providers.CrowdinApi
                 return;
             }
 
-            long? localBuildId = GetLocalBuildId();
+            LocalizationPreparation.Result local = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadApiBuildId, kBuildIdPath);
+            local.ThrowIfFailed();
+            long? localBuildId = local.buildId;
 
             if (buildResponse.id == localBuildId)
             {
@@ -86,62 +87,63 @@ namespace SiraLocalizer.Providers.CrowdinApi
 
             await DownloadAndExtractBuild(resp.url, cancellationToken);
 
-            File.WriteAllText(kBuildIdPath, buildResponse.id.ToString());
+            LocalizationPreparation.Result written = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.WriteApiBuildId, kBuildIdPath, buildResponse.id.ToString());
+            written.ThrowIfFailed();
         }
 
         public async IAsyncEnumerable<LocalizationFile> GetLocalizationAssetsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            if (!Directory.Exists(kDownloadedFolder))
+            LocalizationPreparation.Result catalog = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.OpenApiCatalog, kDownloadedFolder);
+            catalog.ThrowIfFailed();
+            if (catalog.fileLease == 0)
             {
                 yield break;
             }
 
-            foreach (string filePath in Directory.EnumerateFiles(kDownloadedFolder, "*.csv", SearchOption.AllDirectories))
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                string id = Path.ChangeExtension(filePath.Replace(kDownloadedFolder, string.Empty).Substring(1).Replace('\\', '/'), null);
-
-                if (!LocalizationDefinition.IsDefinitionLoaded(id))
+                while (true)
                 {
-                    _logger.Debug($"No localized plugin registered for '{id}'; ignored");
-                    continue;
-                }
+                    LocalizationPreparation.Result next = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.NextApiFile, null, fileLease: catalog.fileLease);
+                    next.ThrowIfFailed();
+                    if (!next.exists) break;
+                    string filePath = next.text;
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                string content = null;
+                    LocalizationPreparation.Result parsed = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.PrepareApiFileId, filePath, kDownloadedFolder);
+                    parsed.ThrowIfFailed();
+                    string id = parsed.text;
 
-                try
-                {
-                    using StreamReader reader = new(filePath);
-                    content = await reader.ReadToEndAsync();
-                }
-                catch (IOException ex)
-                {
-                    _logger.Error($"Failed to read file '{filePath}'\n{ex}");
-                }
+                    if (!LocalizationDefinition.IsDefinitionLoaded(id))
+                    {
+                        _logger.Debug($"No localized plugin registered for '{id}'; ignored");
+                        continue;
+                    }
 
-                if (content != null)
-                {
-                    yield return new LocalizationFile(content, 1000);
+                    string content = null;
+
+                    try
+                    {
+                        LocalizationPreparation.Result read = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadFile, filePath);
+                        read.ThrowIfFailed();
+                        content = read.text;
+                    }
+                    catch (IOException ex)
+                    {
+                        _logger.Error($"Failed to read file '{filePath}'\n{ex}");
+                    }
+
+                    if (content != null)
+                    {
+                        yield return new LocalizationFile(content, 1000);
+                    }
                 }
             }
-        }
-
-        private long? GetLocalBuildId()
-        {
-            if (!File.Exists(kBuildIdPath))
+            finally
             {
-                return null;
+                LocalizationPreparation.Result released = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReleaseApiCatalog, null, fileLease: catalog.fileLease);
+                released.ThrowIfFailed();
             }
-
-            string text = File.ReadAllText(kBuildIdPath);
-
-            if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out long result))
-            {
-                return null;
-            }
-
-            return result;
         }
 
         private async Task<AbstractProjectBuildResponse> CreateOrGetLatestBuild()
@@ -154,7 +156,7 @@ namespace SiraLocalizer.Providers.CrowdinApi
                 throw new CrowdinApiException($"Unexpected response code {webRequest.responseCode}");
             }
 
-            return DeserializeResponse<AbstractProjectBuildResponse>(webRequest.downloadHandler.data);
+            return await DeserializeResponseAsync<AbstractProjectBuildResponse>(webRequest.downloadHandler.data);
         }
 
         private async Task<AbstractProjectBuildResponse> GetLatestBuild()
@@ -172,7 +174,7 @@ namespace SiraLocalizer.Providers.CrowdinApi
                 throw new CrowdinApiException($"Unexpected response code {webRequest.responseCode}");
             }
 
-            return DeserializePaginatedResponse<AbstractProjectBuildResponse>(webRequest.downloadHandler.data).FirstOrDefault();
+            return (await DeserializeBuildsAsync(webRequest.downloadHandler.data)).FirstOrDefault();
         }
 
         private async Task<DownloadLinkResponse> WaitForBuildToFinishAsync(long buildId)
@@ -185,10 +187,10 @@ namespace SiraLocalizer.Providers.CrowdinApi
                 switch (webRequest.responseCode)
                 {
                     case 200:
-                        return DeserializeResponse<DownloadLinkResponse>(webRequest.downloadHandler.data);
+                        return await DeserializeResponseAsync<DownloadLinkResponse>(webRequest.downloadHandler.data);
 
                     case 202:
-                        AbstractProjectBuildResponse buildResponse = DeserializeResponse<AbstractProjectBuildResponse>(webRequest.downloadHandler.data);
+                        AbstractProjectBuildResponse buildResponse = await DeserializeResponseAsync<AbstractProjectBuildResponse>(webRequest.downloadHandler.data);
 
                         if (buildResponse.status != ProjectBuildStatus.InProgress)
                         {
@@ -212,17 +214,18 @@ namespace SiraLocalizer.Providers.CrowdinApi
             await _webRequestHelper.SendRequest(webRequest);
 
             byte[] data = webRequest.downloadHandler.data;
+            string downloadedFolder = kDownloadedFolder;
             await Task.Run(() =>
             {
-                if (Directory.Exists(kDownloadedFolder))
+                if (Directory.Exists(downloadedFolder))
                 {
-                    Directory.Delete(kDownloadedFolder, true);
+                    Directory.Delete(downloadedFolder, true);
                 }
 
-                Directory.CreateDirectory(kDownloadedFolder);
+                Directory.CreateDirectory(downloadedFolder);
                 using var memoryStream = new MemoryStream(data);
                 using var archive = new ZipArchive(memoryStream);
-                archive.ExtractToDirectory(kDownloadedFolder);
+                archive.ExtractToDirectory(downloadedFolder);
             }, cancellationToken);
         }
 
@@ -249,6 +252,31 @@ namespace SiraLocalizer.Providers.CrowdinApi
         {
             string str = Encoding.UTF8.GetString(data);
             return JsonConvert.DeserializeObject<DataResponse<T>>(str).data;
+        }
+
+        private async Task<T> DeserializeResponseAsync<T>(byte[] data)
+        {
+            if (JsonConvert.DefaultSettings != null)
+                return DeserializeResponse<T>(data);
+            LocalizationPreparation.Operation operation;
+            if (typeof(T) == typeof(AbstractProjectBuildResponse))
+                operation = LocalizationPreparation.Operation.ParseApiBuild;
+            else if (typeof(T) == typeof(DownloadLinkResponse))
+                operation = LocalizationPreparation.Operation.ParseApiDownload;
+            else
+                return DeserializeResponse<T>(data);
+            LocalizationPreparation.Result parsed = await LocalizationPreparation.Prepare(operation, null, bytes: data);
+            parsed.ThrowIfFailed();
+            return operation == LocalizationPreparation.Operation.ParseApiBuild ? (T)(object)parsed.buildResponse : (T)(object)parsed.downloadLink;
+        }
+
+        private async Task<AbstractProjectBuildResponse[]> DeserializeBuildsAsync(byte[] data)
+        {
+            if (JsonConvert.DefaultSettings != null)
+                return DeserializePaginatedResponse<AbstractProjectBuildResponse>(data);
+            LocalizationPreparation.Result parsed = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ParseApiBuilds, null, bytes: data);
+            parsed.ThrowIfFailed();
+            return parsed.builds;
         }
 
         private T[] DeserializePaginatedResponse<T>(byte[] data)

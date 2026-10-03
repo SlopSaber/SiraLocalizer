@@ -1,16 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text.RegularExpressions;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using BGLib.Polyglot;
 using Newtonsoft.Json;
 using SiraLocalizer.Providers.Crowdin;
+using SiraLocalizer.Providers.CrowdinApi.Models;
 
 namespace SiraLocalizer.Utilities
 {
@@ -32,6 +35,15 @@ namespace SiraLocalizer.Utilities
             WriteText,
             ReadHeldFile,
             ReleaseHeldFile,
+            ReadApiBuildId,
+            WriteApiBuildId,
+            OpenApiCatalog,
+            NextApiFile,
+            ReleaseApiCatalog,
+            PrepareApiFileId,
+            ParseApiBuild,
+            ParseApiDownload,
+            ParseApiBuilds,
         }
 
         internal readonly struct CrowdinPath
@@ -70,6 +82,10 @@ namespace SiraLocalizer.Utilities
             internal CrowdinPath crowdinPath;
             internal CrowdinDistributionManifest manifest;
             internal long fileLease;
+            internal long? buildId;
+            internal AbstractProjectBuildResponse buildResponse;
+            internal DownloadLinkResponse downloadLink;
+            internal AbstractProjectBuildResponse[] builds;
 
             internal void ThrowIfFailed()
             {
@@ -102,6 +118,7 @@ namespace SiraLocalizer.Utilities
         private static readonly Queue<Request> kRequests = new();
         private static readonly Regex kCrowdinPathRegex = new(@"^\/[A-Za-z\-_]+(?:\/[A-Za-z\-_]+)*\.csv$");
         private static readonly Dictionary<long, StreamReader> kFileReaders = new();
+        private static readonly Dictionary<long, IEnumerator<string>> kApiCatalogs = new();
         private static long _nextFileLease;
         private static Task _worker;
 
@@ -221,6 +238,50 @@ namespace SiraLocalizer.Utilities
                             finally { kFileReaders.Remove(request.fileLease); }
                         }
                         break;
+                    case Operation.ReadApiBuildId:
+                        if (File.Exists(value) && long.TryParse(File.ReadAllText(value), NumberStyles.None, CultureInfo.InvariantCulture, out long buildId))
+                            result.buildId = buildId;
+                        break;
+                    case Operation.WriteApiBuildId:
+                        File.WriteAllText(value, request.secondaryValue);
+                        break;
+                    case Operation.OpenApiCatalog:
+                        if (Directory.Exists(value))
+                        {
+                            IEnumerator<string> catalog = Directory.EnumerateFiles(value, "*.csv", SearchOption.AllDirectories).GetEnumerator();
+                            long catalogLease = ++_nextFileLease;
+                            try { kApiCatalogs.Add(catalogLease, catalog); }
+                            catch { catalog.Dispose(); throw; }
+                            result.fileLease = catalogLease;
+                        }
+                        break;
+                    case Operation.NextApiFile:
+                        IEnumerator<string> iterator = kApiCatalogs[request.fileLease];
+                        result.exists = iterator.MoveNext();
+                        if (result.exists) result.text = iterator.Current;
+                        break;
+                    case Operation.ReleaseApiCatalog:
+                        if (kApiCatalogs.TryGetValue(request.fileLease, out IEnumerator<string> apiCatalog))
+                        {
+                            try { apiCatalog.Dispose(); }
+                            finally { kApiCatalogs.Remove(request.fileLease); }
+                        }
+                        break;
+                    case Operation.PrepareApiFileId:
+                        result.text = Path.ChangeExtension(value.Replace(request.secondaryValue, string.Empty).Substring(1).Replace('\\', '/'), null);
+                        break;
+                    case Operation.ParseApiBuild:
+                        result.buildResponse = ParseApiJson<DataResponse<AbstractProjectBuildResponse>>(request.bytes).data;
+                        break;
+                    case Operation.ParseApiDownload:
+                        result.downloadLink = ParseApiJson<DataResponse<DownloadLinkResponse>>(request.bytes).data;
+                        break;
+                    case Operation.ParseApiBuilds:
+                        IList<DataResponse<AbstractProjectBuildResponse>> items = ParseApiJson<PaginatedDataResponse<AbstractProjectBuildResponse>>(request.bytes).data;
+                        var values = new AbstractProjectBuildResponse[items.Count];
+                        for (int i = 0; i < items.Count; i++) values[i] = items[i].data;
+                        result.builds = values;
+                        break;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(request.operation), request.operation, null);
                 }
@@ -230,6 +291,15 @@ namespace SiraLocalizer.Utilities
                 result.error = error;
             }
             return result;
+        }
+
+        private static T ParseApiJson<T>(byte[] data)
+        {
+            string text = Encoding.UTF8.GetString(data);
+            using var reader = new JsonTextReader(new StringReader(text));
+            var serializer = JsonSerializer.Create();
+            serializer.CheckAdditionalContent = true;
+            return serializer.Deserialize<T>(reader);
         }
 
         private static CrowdinPath ParseCrowdinPath(string filePath, string directory)
