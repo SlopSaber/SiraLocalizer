@@ -30,6 +30,8 @@ namespace SiraLocalizer.Utilities
             CreateFileDirectory,
             WriteCrowdinFile,
             WriteText,
+            ReadHeldFile,
+            ReleaseHeldFile,
         }
 
         internal readonly struct CrowdinPath
@@ -67,6 +69,7 @@ namespace SiraLocalizer.Utilities
             internal bool exists;
             internal CrowdinPath crowdinPath;
             internal CrowdinDistributionManifest manifest;
+            internal long fileLease;
 
             internal void ThrowIfFailed()
             {
@@ -81,14 +84,16 @@ namespace SiraLocalizer.Utilities
             internal readonly string value;
             internal readonly string secondaryValue;
             internal readonly byte[] bytes;
+            internal readonly long fileLease;
             internal readonly TaskCompletionSource<Result> completion;
 
-            internal Request(Operation operation, string value, string secondaryValue, byte[] bytes)
+            internal Request(Operation operation, string value, string secondaryValue, byte[] bytes, long fileLease)
             {
                 this.operation = operation;
                 this.value = value;
                 this.secondaryValue = secondaryValue;
                 this.bytes = bytes;
+                this.fileLease = fileLease;
                 completion = new TaskCompletionSource<Result>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
@@ -96,11 +101,13 @@ namespace SiraLocalizer.Utilities
         private static readonly object kGate = new();
         private static readonly Queue<Request> kRequests = new();
         private static readonly Regex kCrowdinPathRegex = new(@"^\/[A-Za-z\-_]+(?:\/[A-Za-z\-_]+)*\.csv$");
+        private static readonly Dictionary<long, StreamReader> kFileReaders = new();
+        private static long _nextFileLease;
         private static Task _worker;
 
-        internal static Task<Result> Prepare(Operation operation, string value, string secondaryValue = null, byte[] bytes = null)
+        internal static Task<Result> Prepare(Operation operation, string value, string secondaryValue = null, byte[] bytes = null, long fileLease = 0)
         {
-            var request = new Request(operation, value, secondaryValue, bytes);
+            var request = new Request(operation, value, secondaryValue, bytes, fileLease);
             lock (kGate)
             {
                 kRequests.Enqueue(request);
@@ -180,7 +187,7 @@ namespace SiraLocalizer.Utilities
                         using (var reader = new JsonTextReader(new StringReader(value)))
                         {
                             // Bypass global factory callbacks; custom settings stay on the caller.
-                            JsonSerializer serializer = JsonSerializer.Create();
+                            var serializer = JsonSerializer.Create();
                             serializer.CheckAdditionalContent = true;
                             result.manifest = serializer.Deserialize<CrowdinDistributionManifest>(reader);
                         }
@@ -198,6 +205,21 @@ namespace SiraLocalizer.Utilities
                     case Operation.WriteText:
                         using (var writer = new StreamWriter(value))
                             writer.Write(request.secondaryValue);
+                        break;
+                    case Operation.ReadHeldFile:
+                        var heldReader = new StreamReader(value);
+                        long lease = ++_nextFileLease;
+                        try { kFileReaders.Add(lease, heldReader); }
+                        catch { heldReader.Dispose(); throw; }
+                        result.fileLease = lease;
+                        result.text = heldReader.ReadToEnd();
+                        break;
+                    case Operation.ReleaseHeldFile:
+                        if (kFileReaders.TryGetValue(request.fileLease, out StreamReader fileReader))
+                        {
+                            try { fileReader.Dispose(); }
+                            finally { kFileReaders.Remove(request.fileLease); }
+                        }
                         break;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(request.operation), request.operation, null);

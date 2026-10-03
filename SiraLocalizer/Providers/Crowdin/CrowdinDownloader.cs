@@ -233,7 +233,21 @@ namespace SiraLocalizer.Providers.Crowdin
         {
             try
             {
-                return await DeserializeManifestAsync(await ReadFileAsync(kManifestFilePath));
+                LocalizationPreparation.Result read = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReadHeldFile, kManifestFilePath);
+                try
+                {
+                    read.ThrowIfFailed();
+                    return await DeserializeManifestAsync(read.text);
+                }
+                finally
+                {
+                    if (read.fileLease != 0)
+                    {
+                        // Custom JSON callbacks run while the original file lease remains open.
+                        LocalizationPreparation.Result released = await LocalizationPreparation.Prepare(LocalizationPreparation.Operation.ReleaseHeldFile, null, fileLease: read.fileLease);
+                        released.ThrowIfFailed();
+                    }
+                }
             }
             catch (IOException ex)
             {
