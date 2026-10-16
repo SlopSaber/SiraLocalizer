@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project Sdk="Microsoft.Net.SDK">
+<Project>
+  <Import Project="Sdk.props" Sdk="Microsoft.Net.SDK" />
   <PropertyGroup>
-    <BeatSaberDir>D:\BSManager\BSInstances\1.45.2</BeatSaberDir>
-    <GameDirectory>D:\BSManager\BSInstances\1.45.2</GameDirectory>
+    <BeatSaberDir>D:\BSManager\BSInstances\1.45.3</BeatSaberDir>
+    <GameDirectory>D:\BSManager\BSInstances\1.45.3</GameDirectory>
     <ImportBSMTTargets>true</ImportBSMTTargets>
     <BSMTProjectType>BSIPA</BSMTProjectType>
     <GenerateManifest>true</GenerateManifest>
@@ -23,7 +24,7 @@
     <Authors>SIRA</Authors>
     <Copyright>Copyright © SIRA 2020-2025</Copyright>
     <Description>Community localization support in Beat Saber.</Description>
-    <GameVersion>1.45.2</GameVersion>
+    <GameVersion>1.45.3</GameVersion>
     <Version>2.0.4</Version>
     <RepositoryUrl>https://github.com/Auros/SiraLocalizer</RepositoryUrl>
     <PluginFeatures>
@@ -104,4 +105,6 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
   </ItemGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.Net.SDK" />
+  <Import Project="..\BSIPA.Layout.targets" Condition="Exists('$(GameDirectory)\IPA\Data\Managed\IPA.Loader.dll') OR Exists('$(BeatSaberDir)\IPA\Data\Managed\IPA.Loader.dll')" />
 </Project>
