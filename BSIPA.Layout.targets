@@ -7,8 +7,8 @@
     <_BSIPACoreLibraries>$(_BSIPARoot)\IPA\CoreLibraries</_BSIPACoreLibraries>
     <_BSIPAMods>$(_BSIPARoot)\Mods</_BSIPAMods>
     <_BSIPAPending>$(_BSIPARoot)\IPA\Pending</_BSIPAPending>
-    <EnableFrameworkPathOverride Condition="$([System.String]::Copy('$(TargetFramework)').StartsWith('net4'))">true</EnableFrameworkPathOverride>
-    <FrameworkPathOverride Condition="$([System.String]::Copy('$(TargetFramework)').StartsWith('net4'))">$(_BSIPARoot)\Beat Saber_Data\Managed</FrameworkPathOverride>
+    <EnableFrameworkPathOverride Condition="$([System.String]::Copy('$(TargetFramework)').StartsWith('net4')) OR $([System.String]::Copy('$(TargetFrameworkVersion)').StartsWith('v4'))">true</EnableFrameworkPathOverride>
+    <FrameworkPathOverride Condition="$([System.String]::Copy('$(TargetFramework)').StartsWith('net4')) OR $([System.String]::Copy('$(TargetFrameworkVersion)').StartsWith('v4'))">$(_BSIPARoot)\Beat Saber_Data\Managed</FrameworkPathOverride>
     <_BSIPAModOutput>Mods</_BSIPAModOutput>
     <_BSIPAModOutput Condition="'$(BeatSaberOutputType)' == 'Library' OR '$(AssemblyName)' == 'AssetComponents' OR '$(AssemblyName)' == 'SaberComponents' OR '$(AssemblyName)' == 'Reactive' OR '$(AssemblyName)' == 'Reactive.Components' OR '$(AssemblyName)' == 'BeatSaberPlaylistsLib' OR '$(AssemblyName)' == 'PPPredictor.Core'">Mods\Libraries</_BSIPAModOutput>
     <ArtifactDestination>$(TargetDir)Artifact</ArtifactDestination>
